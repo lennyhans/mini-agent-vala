@@ -1,9 +1,10 @@
 CC      = valac
-CFLAGS  = -O2 -pipe -Wall -Wextra
-LDLIBS  = --pkg libsoup-3.0 --pkg json-glib-1.0
+VALAFLAGS = --vapidir vala-extra-vapis
+CFLAGS = -X -Wno-incompatible-pointer-types -X -Wno-discarded-qualifiers
+LDLIBS  = --pkg libcurl --pkg json-glib-1.0
 
 main: main.vala
-	$(CC) $(LDLIBS) $< -o $@ -X -Wno-incompatible-pointer-types -X -Wno-discarded-qualifiers
+	$(CC) $(VALAFLAGS) $(LDLIBS) $< -o $@ --cc=/usr/bin/gcc-14 $(CFLAGS)
 
 clean:
 	rm --force main
