@@ -1,4 +1,3 @@
-using Soup;
 using Json;
 
 public struct Message {
@@ -10,7 +9,7 @@ string build_json_payload (Message[] messages) {
     var builder = new Json.Builder ();
     builder.begin_object ();
     builder.set_member_name ("model");
-    builder.add_string_value ("gpt-4.1");
+    builder.add_string_value ("anthropic/claude-haiku-4.5");
     builder.set_member_name ("messages");
     builder.begin_array ();
     foreach (var msg in messages) {
@@ -29,27 +28,59 @@ string build_json_payload (Message[] messages) {
     return generator.to_data (null);
 }
 
+static size_t curl_write_cb (char* ptr, size_t size, size_t nmemb, void* userdata) {
+    var buf = (GLib.ByteArray) userdata;
+    var chunk = new uint8[size * nmemb];
+    GLib.Memory.copy (chunk, ptr, size * nmemb);
+    buf.append (chunk);
+    return size * nmemb;
+}
+
 string query_lm (Message[] messages) throws Error {
     string api_key = GLib.Environment.get_variable ("OPENAI_API_KEY");
+    string api_host = GLib.Environment.get_variable ("OPENAI_API_HOST");
     if (api_key == null || api_key == "") {
         throw new IOError.FAILED ("OPENAI_API_KEY environment variable not set");
     }
 
     string payload = build_json_payload (messages);
 
-    var session = new Soup.Session ();
-    var message = new Soup.Message ("POST", "https://api.openai.com/v1/chat/completions");
-    message.request_headers.append ("Authorization", "Bearer " + api_key);
-    message.request_headers.append ("Content-Type", "application/json");
-    var body = new GLib.Bytes (payload.data);
-    message.set_request_body_from_bytes ("application/json", body);
+    var curl = new Curl.EasyHandle ();
+    var response_buf = new GLib.ByteArray ();
 
-    var response_bytes = session.send_and_read (message, null);
-    string response_str = (string) response_bytes.get_data ();
+    curl.setopt (Curl.Option.URL, api_host);
+    curl.setopt (Curl.Option.POST, 1L);
+    curl.setopt (Curl.Option.POSTFIELDS, payload);
+    curl.setopt (Curl.Option.POSTFIELDSIZE, (long) payload.length);
+
+    Curl.SList? headers = null;
+    headers = Curl.SList.append ((owned) headers, "Content-Type: application/json");
+    headers = Curl.SList.append ((owned) headers, "Authorization: Bearer " + api_key);
+    curl.setopt (Curl.Option.HTTPHEADER, headers);
+
+    curl.setopt (Curl.Option.WRITEFUNCTION, (Curl.WriteCallback) curl_write_cb);
+    curl.setopt (Curl.Option.WRITEDATA, response_buf);
+
+    var code = curl.perform ();
+
+    if (code != Curl.Code.OK) {
+        throw new IOError.FAILED ("curl error: %s".printf (Curl.Global.strerror (code)));
+    }
+
+    long status_code = 0;
+    curl.getinfo (Curl.Info.RESPONSE_CODE, out status_code);
+
+    // null-terminate
+    response_buf.append ({ 0 });
+    string response_str = (string) response_buf.data;
+
+    if (status_code != 200) {
+        throw new IOError.FAILED ("HTTP %ld: %s".printf (status_code, response_str));
+    }
 
     var parser = new Json.Parser ();
     parser.load_from_data (response_str);
-    var root = parser.get_root ().get_object ();
+    var root = parser.get_root ().get_object ();   
     var choices = root.get_array_member ("choices");
     var first = choices.get_object_element (0);
     var msg_obj = first.get_object_member ("message");
